@@ -1,0 +1,60 @@
+name: Build unsigned iPhone app
+
+# Builds apps/mobile as an unsigned Release .ipa on a GitHub-hosted Mac and
+# attaches it to a GitHub release, so atvloadly (or Sideloadly) can sign it
+# with a free Apple ID. Production backend (api.multica.ai), per
+# apps/mobile/.env.production.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 150
+    env:
+      APP_ENV: production
+      EXPO_BUNDLE_IDENTIFIER_PROD: com.oshanecassella.multica
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Generate the iOS project
+        working-directory: apps/mobile
+        run: pnpm exec dotenv -e .env.production -- pnpm exec expo prebuild -p ios
+
+      - name: Build without signing
+        working-directory: apps/mobile
+        run: |
+          WS=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WS" .xcworkspace)
+          pnpm exec dotenv -e .env.production -- xcodebuild \
+            -workspace "$WS" -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -destination generic/platform=iOS \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/*.app Payload/
+          zip -qry multica-ios-unsigned.ipa Payload
+
+      - name: Publish the .ipa as a release
+        working-directory: apps/mobile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="ios-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$TAG" multica-ios-unsigned.ipa \
+            --title "Unsigned iPhone build $TAG" \
+            --notes "Unsigned Release build of apps/mobile from $GITHUB_SHA. Sign with atvloadly or Sideloadly."
